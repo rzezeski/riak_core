@@ -16,7 +16,203 @@
 %% under the License.
 %%
 %% -------------------------------------------------------------------
+
+%% @doc Riak Virtual Node behaviour.
+%%
+%% == Callbacks ==
+%%
+%% === Module:init([Index]) -> Result ===
+%%
+%% ```
+%% Index = int() >= 0
+%% Result = {ok, State}
+%% State = term()
+%% '''
+%%
+%% This function is called by the vnode process to build the initial
+%% state.
+%%
+%% Index is the partition index assigned to this vnode.  The init
+%% function must return `{ok, State}' where `State' is the internal
+%% state of the vnode.
+%%
+%%
+%% === Module:handle_command(Request, Sender, State) -> Result ===
+%%
+%% ```
+%% Request = vnode_req()
+%% Sender = sender()
+%% State = NewState = term()
+%% Result -> {reply, Reply, NewState}
+%%           | {noreply, NewState}
+%%           | {stop, Reason, NewState}
+%% '''
+%%
+%% TODO Talk about return types and defined Reply and Reason types.
+%%
+%% This function is called by `riak_core_vnode' when it's been sent a
+%% command to execute.  A command can be issued several ways:
+%% `riak_core_vnode:send_command/2',
+%% `riak_core_vnode:send_command_after/2' or even rely on the fact
+%% that a vnode is a `gen_fsm' underneath and send via
+%% `gen_fsm:send_event/2'.
+%%
+%% `Request' can be any term (typically a record) and represents an
+%% action to be performed.
+%%
+%% `Sender' is a representation of where the request originated from
+%% and can be used to send a reply.
+%%
+%% `State' is the internal state of the vnode.
+%%
+%%
+%% === Module:handoff_starting(TargetNode, State) -> Result ===
+%%
+%% ```
+%% TargetNode =
+%% Result = {true, NewState} | {false, NewState}
+%% State = NewState = term()
+%% '''
+%%
+%% This function is called when if it is determined that this
+%% particular vnode is not located on the proper physical node.  E.g.,
+%% when a new node is added to the cluster and the vnodes must be
+%% redistributed.
+%%
+%% As input it gets the `TargetNode' which is the node that the vnode
+%% should be located on and state is the internal vnode state.
+%%
+%% This function should return `{true, NewState}' to indicate that
+%% handoff should indeed occur or `{false, NewState}' to indicate that
+%% handoff should be deferred for now.
+%%
+%%
+%% === Module:handoff_cancelled(State) -> Result ===
+%%
+%% ```
+%% State = NewState = term()
+%% Result = {ok, NewState}
+%% '''
+%%
+%% This function is called if it's determined that the max allowed
+%% number of concurrent handoffs has already been reached.
+%%
+%% This function should return `{ok, NewState}' to indicate a
+%% successful cancel.
+%%
+%%
+%% === Module:handle_handoff_command(Request, Sender, State) -> Result ===
+%%
+%% ```
+%% Request = vnode_req()
+%% Sender = sender()
+%% State = NewState = term()
+%% Result = {reply, Reply, NewState}
+%%        | {noreply, NewState}
+%%        | {forward, NewState}
+%%        | {drop, NewState}
+%%        | {stop, Reason, NewState}
+%% '''
+%%
+%% TODO Document.
+%%
+%%
+%% === Module:handle_handoff_data(BinObj, State) -> Result ===
+%%
+%% ```
+%% BinObj = binary()
+%% State = NewState = term()
+%% Result = {reply, ok, NewState}
+%%        | {reply, {error, Error}, NewState}
+%% '''
+%%
+%% This function is called when the vnode is given handoff data.  The
+%% BinOjb is a binary and is the result of calling
+%% `encode_handoff_item/2'.
+%%
+%% This function should return `{reply, ok, NewState}' if the handoff
+%% was successful otherwise it should return `{reply, {error, Error},
+%% NewState}' in the case of an error.
+%%
+%%
+%% === Module:encode_handoff_item(K, V) -> Result ===
+%%
+%% ```
+%% K = {Bucket, Key}
+%% Bucket = riak_object:bucket()
+%% Key = riak_object:key()
+%% V = term()
+%% Result -> binary()
+%% '''
+%%
+%% This function is called by riak_core's handoff mechanism in order
+%% to encode the data before it crosses the wire.
+%%
+%% N.B. This function works in conjunction with
+%% `handle_handoff_data/2' and should encode the data in such a way
+%% that `handle_handoff_data/2' can pull it apart.
+%%
+%%
+%% === Module:handoff_finished(TargetNode, State) -> Result ===
+%%
+%% ```
+%% TargetNode = node()
+%% State = NewState = term()
+%% Result = {ok, NewState}
+%% '''
+%%
+%% This function is called when the vnode is finished handing-off it's
+%% data to the `TargetNode'.
+%%
+%% This function should return `{ok, NewState}' to indicate it has
+%% successfully finished.
+%%
+%%
+%% === Module:is_empty(State) -> Result ===
+%%
+%% ```
+%% State = NewState = term()
+%% Result = {true, NewState} | {false, NewState}
+%% '''
+%%
+%% When handoff is initiated the first thing the vnode does is
+%% determine if there is anything to actually hand off.
+%%
+%% This function should return `{true, NewState}' if there is nothing
+%% to hand off or `{false, NewState}' otherwise.
+%%
+%%
+%% === Module:terminate(Reason, State) -> Result ===
+%%
+%% ```
+%% Reason = normal | shutdown | {shutdown, term()} | term()
+%% State = Result = term()
+%% '''
+%%
+%% This function is called when the vnode is about to terminate.  The
+%% `Reason' will depend on why it's being terminated, you can find out
+%% more by reading the gen_fsm doc.
+%%
+%% The return value of this function is ignored.
+%%
+%%
+%% === Module:delete(State) -> Result ===
+%%
+%% ```
+%% State = NewState = term()
+%% Result = {ok, NewState}
+%% '''
+%%
+%% When handoff determines there is no more data to be transfered from
+%% this node via `is_empty/1' it calls this function to delete the
+%% vnode.  This allows the vnode to clean up after itself.
+%%
+%% This function should return `{ok, NewState}' to indicate a
+%% successful delete.
+
 -module(riak_core_vnode).
+
+
 -behaviour(gen_fsm).
 -include_lib("riak_core_vnode.hrl").
 -export([behaviour_info/1]).
@@ -36,6 +232,8 @@
 -export([get_mod_index/1]).
 
 -spec behaviour_info(atom()) -> 'undefined' | [{atom(), arity()}].
+
+%% @private
 behaviour_info(callbacks) ->
     [{init,1},
      {handle_command,3},
@@ -97,7 +295,7 @@ send_command(Pid, Request) ->
 send_command_after(Time, Request) ->
     gen_fsm:send_event_after(Time, ?VNODE_REQ{request=Request}).
     
-
+%% @private
 init([Mod, Index, InitialInactivityTimeout]) ->
     %%TODO: Should init args really be an array if it just gets Init?
     process_flag(trap_exit, true),
@@ -148,6 +346,7 @@ vnode_handoff_command(Sender, Request, State=#state{index=Index,
             {stop, Reason, State#state{modstate=NewModState}}
     end.
 
+%% @private
 active(timeout, State=#state{mod=Mod, modstate=ModState}) ->
     case should_handoff(State) of
         {true, TargetNode} ->
@@ -176,13 +375,16 @@ active(handoff_complete, State=#state{mod=Mod,
     riak_core_handoff_manager:add_exclusion(Mod, Idx),
     {stop, normal, State#state{modstate=NewModState, handoff_node=none}}.
 
+%% @private
 active(_Event, _From, State) ->
     Reply = ok,
     {reply, Reply, active, State, State#state.inactivity_timeout}.
 
+%% @private
 handle_event(R=?VNODE_REQ{}, _StateName, State) ->
     active(R, State).
 
+%% @private
 handle_sync_event(get_mod_index, _From, StateName,
                   State=#state{index=Idx,mod=Mod}) ->
     {reply, {Mod, Idx}, StateName, State, State#state.inactivity_timeout};
@@ -198,6 +400,7 @@ handle_sync_event({handoff_data,BinObj}, _From, StateName,
              State#state.inactivity_timeout}
     end.
 
+%% @private
 handle_info({'EXIT', Pid, Reason}, StateName, State=#state{mod=Mod}) ->
     %% A linked processes has died so use the
     %% handle_exit callback to allow the vnode 
@@ -213,10 +416,12 @@ handle_info({'EXIT', Pid, Reason}, StateName, State=#state{mod=Mod}) ->
 handle_info(_Info, StateName, State) ->
     {next_state, StateName, State, State#state.inactivity_timeout}.
 
+%% @private
 terminate(Reason, _StateName, #state{mod=Mod, modstate=ModState}) ->
     Mod:terminate(Reason, ModState),
     ok.
 
+%% @private
 code_change(_OldVsn, StateName, State, _Extra) ->
     {ok, StateName, State}.
 
