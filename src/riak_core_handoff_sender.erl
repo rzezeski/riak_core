@@ -1,8 +1,6 @@
 %% -------------------------------------------------------------------
 %%
-%% riak_handoff_sender: send a partition's data via TCP-based handoff
-%%
-%% Copyright (c) 2007-2010 Basho Technologies, Inc.  All Rights Reserved.
+%% Copyright (c) 2007-2012 Basho Technologies, Inc.  All Rights Reserved.
 %%
 %% This file is provided to you under the Apache License,
 %% Version 2.0 (the "License"); you may not use this file
@@ -23,25 +21,27 @@
 %% @doc send a partition's data via TCP-based handoff
 
 -module(riak_core_handoff_sender).
--export([start_link/4, get_handoff_ssl_options/0]).
+-export([get_handoff_ssl_options/0,
+         start_link/5]).
 -include("riak_core_vnode.hrl").
 -include("riak_core_handoff.hrl").
 -define(ACK_COUNT, 1000).
 %% can be set with env riak_core, handoff_timeout
 -define(TCP_TIMEOUT, 60000).
 
-start_link(TargetNode, Module, {SrcPartition, TargetPartition}, VnodePid) ->
+start_link(TargetNode, Module, {SrcPartition, TargetPartition}, Filter, VnodePid) ->
     SslOpts = get_handoff_ssl_options(),
     Pid = spawn_link(fun()->start_fold(TargetNode,
                                        Module,
                                        {SrcPartition, TargetPartition},
+                                       Filter,
                                        VnodePid,
                                        SslOpts)
                      end),
     {ok, Pid}.
 
 start_fold(TargetNode, Module, {SrcPartition, TargetPartition},
-           ParentPid, SslOpts) ->
+           Filter, ParentPid, SslOpts) ->
      try
          [_Name,Host] = string:tokens(atom_to_list(TargetNode), "@"),
          {ok, Port} = get_handoff_port(TargetNode),
@@ -55,6 +55,11 @@ start_fold(TargetNode, Module, {SrcPartition, TargetPartition},
                      {ok, Skt} = gen_tcp:connect(Host, Port, SockOpts, 15000),
                      {Skt, gen_tcp}
              end,
+
+         Filter2 = case Filter of
+                       none -> fun(_) -> true end;
+                       _ -> Filter
+                   end,
 
          %% Piggyback the sync command from previous releases to send
          %% the vnode type across.  If talking to older nodes they'll
@@ -94,7 +99,8 @@ start_fold(TargetNode, Module, {SrcPartition, TargetPartition},
          process_flag(trap_exit, true),
          SPid = self(),
          Req = ?FOLD_REQ{foldfun=fun visit_item/3,
-                         acc0={Socket, ParentPid, Module, TcpMod, 0,0, ok}},
+                         acc0={Filter2, Socket, ParentPid,
+                               Module, TcpMod, 0,0, ok}},
 
          HPid =
              spawn_link(
@@ -102,7 +108,7 @@ start_fold(TargetNode, Module, {SrcPartition, TargetPartition},
                        %% match structure here because otherwise
                        %% you'll end up in infinite loop below if you
                        %% return something other than what it expects.
-                       R = {Socket,ParentPid,Module,TcpMod,_Ack,_,_} =
+                       R = {_,Socket,ParentPid,Module,TcpMod,_Ack,_,_} =
                            riak_core_vnode_master:sync_command({SrcPartition, node()},
                                                                Req,
                                                                VMaster, infinity),
@@ -127,7 +133,7 @@ start_fold(TargetNode, Module, {SrcPartition, TargetPartition},
                               TargetNode, From, E]),
                  error;
 
-             {MRef, {Socket,ParentPid,Module,TcpMod,_Ack,SentCount,ErrStatus}} ->
+             {MRef, {_,Socket,ParentPid,Module,TcpMod,_Ack,SentCount,ErrStatus}} ->
 
                  case ErrStatus of
                      ok ->
@@ -197,31 +203,43 @@ start_fold(TargetNode, Module, {SrcPartition, TargetPartition},
 
 %% When a tcp error occurs, the ErrStatus argument is set to {error, Reason}.
 %% Since we can't abort the fold, this clause is just a no-op.
-visit_item(_K, _V, {Socket, ParentPid, Module, TcpMod, Ack, Total,
+visit_item(_K, _V, {Filter, Socket, ParentPid, Module, TcpMod, Ack, Total,
                     {error, Reason}}) ->
-    {Socket, ParentPid, Module, TcpMod, Ack, Total, {error, Reason}};
-visit_item(K, V, {Socket, ParentPid, Module, TcpMod, ?ACK_COUNT, Total, _Err}) ->
+    {Filter, Socket, ParentPid, Module, TcpMod, Ack, Total, {error, Reason}};
+visit_item(K, V, {Filter, Socket, ParentPid, Module, TcpMod, ?ACK_COUNT,
+                  Total, _Err}) ->
     RecvTimeout = get_handoff_receive_timeout(),
     M = <<?PT_MSG_OLDSYNC:8,"sync">>,
     case TcpMod:send(Socket, M) of
         ok ->
             case TcpMod:recv(Socket, 0, RecvTimeout) of
                 {ok,[?PT_MSG_OLDSYNC|<<"sync">>]} ->
-                    visit_item(K, V, {Socket, ParentPid, Module, TcpMod, 0, Total, ok});
+                    visit_item(K, V, {Filter, Socket, ParentPid, Module,
+                                      TcpMod, 0, Total, ok});
                 {error, Reason} ->
-                    {Socket, ParentPid, Module, TcpMod, 0, Total, {error, Reason}}
+                    {Filter, Socket, ParentPid, Module, TcpMod, 0,
+                     Total, {error, Reason}}
             end;
         {error, Reason} ->
-            {Socket, ParentPid, Module, TcpMod, 0, Total, {error, Reason}}
+            {Filter, Socket, ParentPid, Module, TcpMod, 0,
+             Total, {error, Reason}}
     end;
-visit_item(K, V, {Socket, ParentPid, Module, TcpMod, Ack, Total, _ErrStatus}) ->
-    BinObj = Module:encode_handoff_item(K, V),
-    M = <<?PT_MSG_OBJ:8,BinObj/binary>>,
-    case TcpMod:send(Socket, M) of
-        ok ->
-            {Socket, ParentPid, Module, TcpMod, Ack+1, Total+1, ok};
-        {error, Reason} ->
-            {Socket, ParentPid, Module, TcpMod, Ack, Total, {error, Reason}}
+visit_item(K, V, {Filter, Socket, ParentPid, Module, TcpMod, Ack,
+                  Total, _ErrStatus}) ->
+    case Filter(K) of
+        true ->
+            BinObj = Module:encode_handoff_item(K, V),
+            M = <<?PT_MSG_OBJ:8,BinObj/binary>>,
+            case TcpMod:send(Socket, M) of
+                ok ->
+                    {Filter, Socket, ParentPid, Module, TcpMod, Ack+1, Total+1,
+                     ok};
+                {error, Reason} ->
+                    {Filter, Socket, ParentPid, Module, TcpMod, Ack, Total,
+                     {error, Reason}}
+            end;
+        false ->
+            {Filter, Socket, ParentPid, Module, TcpMod, Ack, Total+1, ok}
     end.
 
 get_handoff_port(Node) when is_atom(Node) ->

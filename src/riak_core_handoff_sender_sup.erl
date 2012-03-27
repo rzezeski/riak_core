@@ -27,10 +27,12 @@
         ]).
 
 %% public functions
--export([start_sender/4
+-export([start_sender/4,
+         start_sender/5
         ]).
 
 -define(CHILD(I,Type), {I,{I,start_link,[]},temporary,brutal_kill,Type,[I]}).
+-define(NO_FILTER, none).
 
 %% begins the supervisor, init/1 will be called
 start_link () ->
@@ -44,4 +46,7 @@ init ([]) ->
 
 %% start a sender process
 start_sender(TargetNode, Module, Idxs, VnodePid) ->
-    supervisor:start_child(?MODULE, [TargetNode, Module, Idxs, VnodePid]).
+    start_sender(TargetNode, Module, Idxs, ?NO_FILTER, VnodePid).
+
+start_sender(TargetNode, Module, Idxs, Filter, VnodePid) ->
+    supervisor:start_child(?MODULE, [TargetNode, Module, Idxs, Filter, VnodePid]).
