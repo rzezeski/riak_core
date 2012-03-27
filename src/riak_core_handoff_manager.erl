@@ -241,7 +241,7 @@ send_handoff (Mod,Idx,Node,Vnode,HS) ->
                     %% start the sender process
                     {ok,Pid}=riak_core_handoff_sender_sup:start_sender(Node,
                                                                        Mod,
-                                                                       Idx,
+                                                                       {Idx, Idx},
                                                                        Vnode),
                     erlang:monitor(process,Pid),
 

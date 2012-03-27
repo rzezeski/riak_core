@@ -43,5 +43,5 @@ init ([]) ->
          ]}}.
 
 %% start a sender process
-start_sender (TargetNode,Module,Idx,VnodePid) ->
-    supervisor:start_child(?MODULE,[TargetNode,Module,Idx,VnodePid]).
+start_sender(TargetNode, Module, Idxs, VnodePid) ->
+    supervisor:start_child(?MODULE, [TargetNode, Module, Idxs, VnodePid]).

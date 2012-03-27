@@ -30,17 +30,18 @@
 %% can be set with env riak_core, handoff_timeout
 -define(TCP_TIMEOUT, 60000).
 
-start_link(TargetNode, Module, Partition, VnodePid) ->
+start_link(TargetNode, Module, {SrcPartition, TargetPartition}, VnodePid) ->
     SslOpts = get_handoff_ssl_options(),
     Pid = spawn_link(fun()->start_fold(TargetNode,
                                        Module,
-                                       Partition,
+                                       {SrcPartition, TargetPartition},
                                        VnodePid,
                                        SslOpts)
                      end),
     {ok, Pid}.
 
-start_fold(TargetNode, Module, Partition, ParentPid, SslOpts) ->
+start_fold(TargetNode, Module, {SrcPartition, TargetPartition},
+           ParentPid, SslOpts) ->
      try
          [_Name,Host] = string:tokens(atom_to_list(TargetNode), "@"),
          {ok, Port} = get_handoff_port(TargetNode),
@@ -80,10 +81,12 @@ start_fold(TargetNode, Module, Partition, ParentPid, SslOpts) ->
              {error, closed} -> exit({shutdown, max_concurrency})
          end,
 
-         lager:info("Starting handoff of partition ~p ~p from ~p to ~p",
-                    [Module, Partition, node(), TargetNode]),
+         lager:info("Starting handoff of partition ~p source ~p"
+                    " target ~p from ~p to ~p",
+                    [Module, SrcPartition, TargetPartition, node(),
+                     TargetNode]),
 
-         M = <<?PT_MSG_INIT:8,Partition:160/integer>>,
+         M = <<?PT_MSG_INIT:8,TargetPartition:160/integer>>,
          ok = TcpMod:send(Socket, M),
          StartFoldTime = now(),
 
@@ -100,7 +103,7 @@ start_fold(TargetNode, Module, Partition, ParentPid, SslOpts) ->
                        %% you'll end up in infinite loop below if you
                        %% return something other than what it expects.
                        R = {Socket,ParentPid,Module,TcpMod,_Ack,_,_} =
-                           riak_core_vnode_master:sync_command({Partition, node()},
+                           riak_core_vnode_master:sync_command({SrcPartition, node()},
                                                                Req,
                                                                VMaster, infinity),
                        SPid ! {MRef, R}
@@ -109,16 +112,19 @@ start_fold(TargetNode, Module, Partition, ParentPid, SslOpts) ->
          receive
              {'DOWN', MRef, process, ParentPid, _Info} ->
                  exit(HPid, kill),
-                 lager:error("Handoff of partition ~p ~p from ~p to ~p failed "
-                             " because vnode died",
-                             [Module, Partition, node(), TargetNode]),
+                 lager:error("Handoff of partition ~p source ~p target ~p"
+                             " from ~p to ~p failed because vnode died",
+                             [Module, SrcPartition, TargetPartition,
+                              node(), TargetNode]),
 
                  error;
 
              {'EXIT', From, E} ->
-                 lager:error("Handoff of partition ~p ~p from ~p to ~p failed "
-                             " because ~p died with reason ~p",
-                             [Module, Partition, node(), TargetNode, From, E]),
+                 lager:error("Handoff of partition ~p source ~p target ~p"
+                             " from ~p to ~p failed because ~p died"
+                             " with reason ~p",
+                             [Module, SrcPartition, TargetPartition, node(),
+                              TargetNode, From, E]),
                  error;
 
              {MRef, {Socket,ParentPid,Module,TcpMod,_Ack,SentCount,ErrStatus}} ->
@@ -130,29 +136,35 @@ start_fold(TargetNode, Module, Partition, ParentPid, SslOpts) ->
                          %% so handoff_complete can only be sent once all of the data is
                          %% written.  handle_handoff_data is a sync call, so once
                          %% we receive the sync the remote side will be up to date.
-                         lager:debug("~p ~p Sending final sync", [Partition, Module]),
+                         lager:debug("source ~p target ~p ~p Sending final sync",
+                                     [SrcPartition, TargetPartition, Module]),
                          ok = TcpMod:send(Socket, <<?PT_MSG_SYNC:8>>),
 
                          case TcpMod:recv(Socket, 0, RecvTimeout) of
                              {ok,[?PT_MSG_SYNC|<<"sync">>]} ->
-                                 lager:debug("~p ~p Final sync received", [Partition, Module]);
+                                 lager:debug("source ~p targer ~p ~p Final sync received",
+                                             [SrcPartition, TargetPartition, Module]);
                              {error, timeout} -> exit({shutdown, timeout})
                          end,
 
                          FoldTimeDiff = end_fold_time(StartFoldTime),
 
-                         lager:info("Handoff of partition ~p ~p from ~p to ~p "
+                         lager:info("Handoff of partition ~p source ~p"
+                                    " target ~p from ~p to ~p "
                                     "completed: sent ~p objects in ~.2f "
                                     "seconds",
-                                    [Module, Partition, node(), TargetNode,
+                                    [Module, SrcPartition, TargetPartition,
+                                     node(), TargetNode,
                                      SentCount, FoldTimeDiff]),
                          gen_fsm:send_event(ParentPid, handoff_complete);
                      {error, ErrReason} ->
                          FoldTimeDiff = end_fold_time(StartFoldTime),
-                         lager:error("Handoff of partition ~p ~p from ~p to ~p "
+                         lager:error("Handoff of partition ~p source ~p target ~p"
+                                     " from ~p to ~p "
                                      "FAILED after sending ~p objects "
                                      "in ~.2f seconds: ~p",
-                                     [Module, Partition, node(), TargetNode,
+                                     [Module, SrcPartition, TargetPartition,
+                                      node(), TargetNode,
                                       SentCount, FoldTimeDiff, ErrReason]),
                          if ErrReason == timeout ->
                                  riak_core_stat:update(handoff_timeouts);
@@ -172,12 +184,14 @@ start_fold(TargetNode, Module, Partition, ParentPid, SslOpts) ->
              %% A receive timeout during handoff
              riak_core_stat:update(handoff_timeouts),
              lager:warning(
-               "TCP recv timeout in handoff of partition ~p ~p from ~p to ~p",
-               [Module, Partition, node(), TargetNode]);
+               "TCP recv timeout in handoff of partition ~p source ~p target ~p"
+               " from ~p to ~p",
+               [Module, SrcPartition, TargetPartition, node(), TargetNode]);
          Err:Reason ->
-             lager:error("Handoff of partition ~p ~p from ~p to ~p failed ~p:~p",
-                         [Module, Partition, node(), TargetNode,
-                          Err, Reason]),
+             lager:error("Handoff of partition ~p source ~p target ~p"
+                         " from ~p to ~p failed ~p:~p",
+                         [Module, SrcPartition, TargetPartition, node(),
+                          TargetNode, Err, Reason]),
              gen_fsm:send_event(ParentPid, {handoff_error, Err, Reason})
      end.
 
