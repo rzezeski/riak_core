@@ -226,9 +226,7 @@ visit_item(K, V, {Filter, Socket, ParentPid, Module, TcpMod, ?ACK_COUNT,
     end;
 visit_item(K, V, {Filter, Socket, ParentPid, Module, TcpMod, Ack,
                   Total, _ErrStatus}) ->
-    %% TODO Get configured hash function
-    KHash = chash:key_of(K),
-    case Filter(KHash) of
+    case Filter(K) of
         true ->
             BinObj = Module:encode_handoff_item(K, V),
             M = <<?PT_MSG_OBJ:8,BinObj/binary>>,
