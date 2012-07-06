@@ -285,6 +285,7 @@ node_up(Node, Services, State) ->
             %% that situation, we'll go ahead broadcast out.
             S2 = case is_node_up(Node) of
                      false ->
+                         riak_core_node_watcher_events:node_update(Node, up),
                          broadcast([Node], State);
                      true ->
                          State
@@ -305,6 +306,7 @@ node_up(Node, Services, State) ->
 node_down(Node, State) ->
     case is_peer(Node, State) of
         true ->
+            riak_core_node_watcher_events:node_update(Node, down),
             case node_delete(Node) of
                 [] ->
                     ok;
