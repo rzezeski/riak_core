@@ -39,6 +39,7 @@
          orddict_delta/2,
          rpc_every_member/4,
          rpc_every_member_ann/4,
+         rpc_every_member_ann/5,
          is_arch/1]).
 
 -ifdef(TEST).
@@ -233,12 +234,25 @@ rpc_every_member(Module, Function, Args, Timeout) ->
 -spec rpc_every_member_ann(module(), atom(), [term()], integer()|infinity)
                           -> {Results::[{node(), term()}], Down::[node()]}.
 rpc_every_member_ann(Module, Function, Args, Timeout) ->
-    {ok, MyRing} = riak_core_ring_manager:get_my_ring(),
-    Nodes = riak_core_ring:all_members(MyRing),
+    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
+    Nodes = riak_core_ring:all_members(Ring),
     {Results, Down} = rpc:multicall(Nodes, Module, Function, Args, Timeout),
     Up = Nodes -- Down,
     TaggedResults = lists:zip(Up, Results),
     {TaggedResults, Down}.
+
+%% @doc Same as rpc_every_member/4, but annotate the result set with
+%%      the name of the node returning the result.
+-spec rpc_every_member_ann(riak_core_ring:ring(), module(), atom(),
+                           [term()], integer()|infinity)
+                          -> {Results::[{node(), term()}], Down::[node()]}.
+rpc_every_member_ann(Ring, Module, Function, Args, Timeout) ->
+    Nodes = riak_core_ring:all_members(Ring),
+    {Results, Down} = rpc:multicall(Nodes, Module, Function, Args, Timeout),
+    Up = Nodes -- Down,
+    TaggedResults = lists:zip(Up, Results),
+    {TaggedResults, Down}.
+
 
 %% @doc Convert a list of elements into an N-ary tree. This conversion
 %%      works by treating the list as an array-based tree where, for
