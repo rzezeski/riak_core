@@ -43,6 +43,7 @@
          num_partitions/1,
          owner_node/1,
          preflist/2,
+         preflist/3,
          random_node/1,
          random_other_index/1,
          random_other_index/2,
@@ -279,9 +280,9 @@ all_owners(State) ->
 -spec all_preflists(State :: chstate(), N :: integer()) ->
                                [[{Index :: integer(), Node :: term()}]].
 all_preflists(State, N) ->
-    [lists:sublist(preflist(Key, State),N) ||
-        Key <- [<<(I+1):160/integer>> ||
-                   {I,_Owner} <- ?MODULE:all_owners(State)]].
+    Owners = ?MODULE:all_owners(State),
+    Keys = [<<(I+1):160/integer>> || {I,_} <- Owners],
+    [preflist(Key, N, State) || Key <- Keys].
 
 %% @doc For two rings, return the list of owners that have differing ownership.
 -spec diff_nodes(chstate(), chstate()) -> [node()].
@@ -368,11 +369,18 @@ num_partitions(State) ->
 owner_node(State) ->
     State?CHSTATE.nodename.
 
-%% @doc For a given object key, produce the ordered list of
-%%      {partition,node} pairs that could be responsible for that object.
--spec preflist(Key :: binary(), State :: chstate()) ->
-                               [{Index :: integer(), Node :: term()}].
-preflist(Key, State) -> chash:successors(Key, State?CHSTATE.chring).
+%% @doc For a given object `Key', produce the ordered list of
+%%      `{Partition, Node}' pairs that could be responsible for that
+%%      object.
+-spec preflist(binary(), chstate()) -> [{Index :: integer(), Node :: term()}].
+preflist(Key, State) ->
+    chash:successors(Key, State?CHSTATE.chring).
+
+%% @doc Same as `preflist/2' but limit to length of `N'.
+-spec preflist(binary(), pos_integer(), chstate()) ->
+    [{Index::integer(), Node::term()}].
+preflist(Key, N, State) ->
+    chash:successors(Key, State?CHSTATE.chring, N).
 
 %% @doc Return a randomly-chosen node from amongst the owners.
 -spec random_node(State :: chstate()) -> Node :: term().
